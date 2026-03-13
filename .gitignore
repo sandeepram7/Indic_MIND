@@ -1,0 +1,20 @@
+# Data, Model, and Output files (large binaries / jsonls)
+data/
+models/
+outputs/
+old_codes/
+code_old_backup/
+code copy/
+Archive/
+Comprehensive Guidance/
+Resume/
+Papers/
+
+# OS-specific and VSCode configurations
+.vscode/
+*.mp4
+*.docx
+*.pdf
+.DS_Store
+__pycache__/
+*.npy
