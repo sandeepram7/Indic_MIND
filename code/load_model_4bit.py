@@ -1,41 +1,31 @@
 """
-Step 1: Load Meta-Llama-3-8B-Instruct in 4-bit quantization and test Hindi generation.
-
-Uses BitsAndBytesConfig to fit the 8B model within 12GB VRAM on RTX 4070 Ti.
+Step 1: Load Llama-3.2-3B-Instruct (unquantized bfloat16) and test Hindi generation.
 
 Usage:
     python code/load_model_4bit.py
 
 Requirements:
     - RTX 4070 Ti (12GB VRAM) or better
-    - pip install torch transformers accelerate bitsandbytes
+    - pip install torch transformers accelerate
 """
 
 import torch
 import os
-from transformers import AutoTokenizer, AutoModelForCausalLM, BitsAndBytesConfig
+from transformers import AutoTokenizer, AutoModelForCausalLM
 
-# 8B model with 4-bit quantization to fit in 12GB VRAM
-MODEL_NAME = "meta-llama/Meta-Llama-3-8B-Instruct"
+# Model configuration
+MODEL_NAME = "meta-llama/Llama-3.2-3B-Instruct"
 OUTPUT_DIR = "outputs"
 
-
 def load_model():
-    """Load Llama-3-8B-Instruct in 4-bit quantization using bitsandbytes."""
-    print(f"Loading {MODEL_NAME} in 4-bit quantization...")
-
-    bnb_config = BitsAndBytesConfig(
-        load_in_4bit=True,
-        bnb_4bit_use_double_quant=True,
-        bnb_4bit_quant_type="nf4",
-        bnb_4bit_compute_dtype=torch.bfloat16,
-    )
+    """Load Llama-3.2-3B-Instruct in bfloat16 (no quantization)."""
+    print(f"Loading {MODEL_NAME} in bfloat16 (unquantized)...")
 
     tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
     model = AutoModelForCausalLM.from_pretrained(
         MODEL_NAME,
         device_map="auto",
-        quantization_config=bnb_config,
+        torch_dtype=torch.bfloat16,
     )
 
     if tokenizer.pad_token is None:
@@ -48,7 +38,7 @@ def load_model():
 
 
 def test_hindi_generation(model, tokenizer):
-    """Test the model with Hindi prompts to verify generation quality."""
+    """Test the model with Hindi prompts to verify it generates readable Hindi."""
 
     hindi_prompts = [
         "Dolo-650 ki recommended dose kya hai? Hindi mein batayein.",
