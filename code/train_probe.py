@@ -1,13 +1,13 @@
 """
 Train MLP probe on extracted hidden state features.
 
-Trains a 3-layer MLP classifier to distinguish factual vs hallucinated
-hidden states. Uses BCELoss with a final Sigmoid activation.
+Supports natural and adversarial feature files.
 
 Usage:
-    python code/train_probe.py
+    python code/train_probe.py --mode adversarial
 """
 
+import argparse
 import os
 import numpy as np
 import torch
@@ -38,18 +38,17 @@ class HallucinationProbe(nn.Module):
         return self.net(x).squeeze(-1)
 
 
-def load_features():
+def load_features(mode="adversarial"):
     """Load extracted hidden state features and create labels."""
-    print("Loading features...")
-    factual_feat1 = np.load(os.path.join(DATA_DIR, "factual_feat1_natural.npy"))
-    factual_feat2 = np.load(os.path.join(DATA_DIR, "factual_feat2_natural.npy"))
-    halluc_feat1 = np.load(os.path.join(DATA_DIR, "halluc_feat1_natural.npy"))
-    halluc_feat2 = np.load(os.path.join(DATA_DIR, "halluc_feat2_natural.npy"))
+    print(f"Loading features for mode '{mode}'...")
+    factual_feat1 = np.load(os.path.join(DATA_DIR, f"factual_feat1_{mode}.npy"))
+    factual_feat2 = np.load(os.path.join(DATA_DIR, f"factual_feat2_{mode}.npy"))
+    halluc_feat1 = np.load(os.path.join(DATA_DIR, f"halluc_feat1_{mode}.npy"))
+    halluc_feat2 = np.load(os.path.join(DATA_DIR, f"halluc_feat2_{mode}.npy"))
 
     factual_features = np.concatenate([factual_feat1, factual_feat2], axis=1)
     halluc_features = np.concatenate([halluc_feat1, halluc_feat2], axis=1)
 
-    # Labels: 0 = factual, 1 = hallucinated
     X = np.concatenate([factual_features, halluc_features], axis=0)
     y = np.concatenate(
         [np.zeros(len(factual_features)), np.ones(len(halluc_features))]
@@ -59,7 +58,7 @@ def load_features():
     return X, y
 
 
-def train_and_evaluate(X, y, epochs=50, batch_size=32, lr=1e-3):
+def train_and_evaluate(X, y, mode="adversarial", epochs=50, batch_size=32, lr=1e-3):
     """Train MLP probe and evaluate on a validation split."""
     X_train, X_val, y_train, y_val = train_test_split(
         X, y, test_size=0.2, random_state=42, stratify=y
@@ -68,7 +67,6 @@ def train_and_evaluate(X, y, epochs=50, batch_size=32, lr=1e-3):
     X_train_t = torch.FloatTensor(X_train)
     y_train_t = torch.FloatTensor(y_train)
     X_val_t = torch.FloatTensor(X_val)
-    y_val_t = torch.FloatTensor(y_val)
 
     train_dataset = TensorDataset(X_train_t, y_train_t)
     train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
@@ -105,7 +103,7 @@ def train_and_evaluate(X, y, epochs=50, batch_size=32, lr=1e-3):
         if val_auc > best_auc:
             best_auc = val_auc
             os.makedirs(MODEL_DIR, exist_ok=True)
-            torch.save(model.state_dict(), os.path.join(MODEL_DIR, "probe_natural.pt"))
+            torch.save(model.state_dict(), os.path.join(MODEL_DIR, f"probe_{mode}.pt"))
 
         if (epoch + 1) % 10 == 0 or epoch == 0:
             avg_loss = train_loss / len(train_loader)
@@ -117,8 +115,17 @@ def train_and_evaluate(X, y, epochs=50, batch_size=32, lr=1e-3):
 
 
 def main():
-    X, y = load_features()
-    best_auc = train_and_evaluate(X, y)
+    parser = argparse.ArgumentParser(
+        description="Train MLP probe on hidden state features"
+    )
+    parser.add_argument("--mode", type=str, default="adversarial",
+                        choices=["natural", "adversarial"])
+    parser.add_argument("--epochs", type=int, default=50)
+    parser.add_argument("--lr", type=float, default=1e-3)
+    args = parser.parse_args()
+
+    X, y = load_features(mode=args.mode)
+    best_auc = train_and_evaluate(X, y, mode=args.mode, epochs=args.epochs, lr=args.lr)
     print(f"\nFinal Best AUC: {best_auc:.4f}")
 
 

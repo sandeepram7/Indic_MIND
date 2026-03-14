@@ -1,16 +1,14 @@
 """
 Extract hidden states from fact/hallucination pairs.
 
-For each sentence pair, runs a forward pass through the frozen model
-and extracts the last token's hidden state from the final layer.
+Supports natural and adversarial generation modes.
 
 Usage:
-    python code/extract_hidden_states.py
-
-Requirements:
-    - data/train_pairs_natural.jsonl must exist (run generate_data.py first)
+    python code/extract_hidden_states.py --mode natural
+    python code/extract_hidden_states.py --mode adversarial
 """
 
+import argparse
 import json
 import os
 import numpy as np
@@ -51,20 +49,23 @@ def extract_features(model, tokenizer, text):
     with torch.no_grad():
         outputs = model(**inputs, output_hidden_states=True)
 
-    # Use only the last (final) layer hidden states
     last_layer = outputs.hidden_states[-1]  # (1, seq_len, hidden_dim)
-
-    # Feature 1: last token in the last layer
-    feat1 = last_layer[0, -1, :]   # (hidden_dim,)
-
-    # Feature 2: all tokens in the last layer, mean-pooled
-    feat2 = last_layer[0].mean(dim=0)  # (hidden_dim,)
+    feat1 = last_layer[0, -1, :]
+    feat2 = last_layer[0].mean(dim=0)
 
     return feat1.cpu().float().numpy(), feat2.cpu().float().numpy()
 
 
 def main():
-    pairs_file = os.path.join(DATA_DIR, "train_pairs_natural.jsonl")
+    parser = argparse.ArgumentParser(
+        description="Extract hidden states from fact/hallucination pairs"
+    )
+    parser.add_argument("--mode", type=str, default="adversarial",
+                        choices=["natural", "adversarial"],
+                        help="Which dataset to process")
+    args = parser.parse_args()
+
+    pairs_file = os.path.join(DATA_DIR, f"train_pairs_{args.mode}.jsonl")
 
     print(f"Loading pairs from {pairs_file}...")
     pairs = []
@@ -104,15 +105,13 @@ def main():
     halluc_feat2 = np.array(halluc_feat2)
 
     print(f"\nExtracted features for {len(factual_feat1)} pairs")
-    print(f"Feature 1 shape: {factual_feat1.shape}")
-    print(f"Feature 2 shape: {factual_feat2.shape}")
 
-    np.save(os.path.join(DATA_DIR, "factual_feat1_natural.npy"), factual_feat1)
-    np.save(os.path.join(DATA_DIR, "factual_feat2_natural.npy"), factual_feat2)
-    np.save(os.path.join(DATA_DIR, "halluc_feat1_natural.npy"), halluc_feat1)
-    np.save(os.path.join(DATA_DIR, "halluc_feat2_natural.npy"), halluc_feat2)
+    np.save(os.path.join(DATA_DIR, f"factual_feat1_{args.mode}.npy"), factual_feat1)
+    np.save(os.path.join(DATA_DIR, f"factual_feat2_{args.mode}.npy"), factual_feat2)
+    np.save(os.path.join(DATA_DIR, f"halluc_feat1_{args.mode}.npy"), halluc_feat1)
+    np.save(os.path.join(DATA_DIR, f"halluc_feat2_{args.mode}.npy"), halluc_feat2)
 
-    print(f"Features saved to {DATA_DIR}/")
+    print(f"Features saved to {DATA_DIR}/ with tag '_{args.mode}'")
 
 
 if __name__ == "__main__":
