@@ -2,10 +2,12 @@
 Extract hidden states from fact/hallucination pairs.
 
 Supports natural and adversarial generation modes.
+Now averages the last token's hidden state across ALL layers
+instead of using only the final layer (matches MIND methodology).
 
 Usage:
-    python code/extract_hidden_states.py --mode natural
     python code/extract_hidden_states.py --mode adversarial
+    python code/extract_hidden_states.py --mode adversarial --layer 14
 """
 
 import argparse
@@ -36,12 +38,16 @@ def load_model():
     return model, tokenizer
 
 
-def extract_features(model, tokenizer, text):
-    """Extract hidden state features from a single text.
+def extract_features(model, tokenizer, text, layer=None):
+    """Extract MIND-style features from a single text.
 
-    Returns two feature vectors:
-      feat1: last token's hidden state from the final layer
-      feat2: all tokens' hidden states from the final layer, averaged
+    Args:
+        layer: If None, average the last token's hidden state across ALL
+               layers (MIND default). If an integer, use only that layer.
+
+    Returns:
+        feat1: Last token hidden state (averaged across layers, or single layer).
+        feat2: Last layer hidden states averaged across all tokens.
     """
     inputs = tokenizer(text, return_tensors="pt", truncation=True, max_length=512)
     inputs = {k: v.to(model.device) for k, v in inputs.items()}
@@ -49,8 +55,16 @@ def extract_features(model, tokenizer, text):
     with torch.no_grad():
         outputs = model(**inputs, output_hidden_states=True)
 
-    last_layer = outputs.hidden_states[-1]  # (1, seq_len, hidden_dim)
-    feat1 = last_layer[0, -1, :]
+    hidden_states = outputs.hidden_states  # tuple of (num_layers+1) tensors
+
+    if layer is not None:
+        feat1 = hidden_states[layer][0, -1, :]
+    else:
+        # Average last-token state across all 28 layers (MIND approach)
+        last_token_per_layer = [hs[0, -1, :] for hs in hidden_states]
+        feat1 = torch.stack(last_token_per_layer).mean(dim=0)
+
+    last_layer = hidden_states[-1]
     feat2 = last_layer[0].mean(dim=0)
 
     return feat1.cpu().float().numpy(), feat2.cpu().float().numpy()
@@ -61,10 +75,12 @@ def main():
         description="Extract hidden states from fact/hallucination pairs"
     )
     parser.add_argument("--mode", type=str, default="adversarial",
-                        choices=["natural", "adversarial"],
-                        help="Which dataset to process")
+                        choices=["natural", "adversarial"])
+    parser.add_argument("--layer", type=int, default=None,
+                        help="Extract from single layer (ablation). Default: avg all layers.")
     args = parser.parse_args()
 
+    suffix = f"_layer{args.layer}" if args.layer is not None else ""
     pairs_file = os.path.join(DATA_DIR, f"train_pairs_{args.mode}.jsonl")
 
     print(f"Loading pairs from {pairs_file}...")
@@ -82,7 +98,7 @@ def main():
 
     for pair in tqdm(pairs, desc="Extracting hidden states"):
         try:
-            f1, f2 = extract_features(model, tokenizer, pair["full_original"])
+            f1, f2 = extract_features(model, tokenizer, pair["full_original"], layer=args.layer)
             factual_feat1.append(f1)
             factual_feat2.append(f2)
         except Exception as e:
@@ -90,7 +106,7 @@ def main():
             continue
 
         try:
-            f1, f2 = extract_features(model, tokenizer, pair["full_llm"])
+            f1, f2 = extract_features(model, tokenizer, pair["full_llm"], layer=args.layer)
             halluc_feat1.append(f1)
             halluc_feat2.append(f2)
         except Exception as e:
@@ -106,12 +122,13 @@ def main():
 
     print(f"\nExtracted features for {len(factual_feat1)} pairs")
 
-    np.save(os.path.join(DATA_DIR, f"factual_feat1_{args.mode}.npy"), factual_feat1)
-    np.save(os.path.join(DATA_DIR, f"factual_feat2_{args.mode}.npy"), factual_feat2)
-    np.save(os.path.join(DATA_DIR, f"halluc_feat1_{args.mode}.npy"), halluc_feat1)
-    np.save(os.path.join(DATA_DIR, f"halluc_feat2_{args.mode}.npy"), halluc_feat2)
+    tag = f"_{args.mode}{suffix}"
+    np.save(os.path.join(DATA_DIR, f"factual_feat1{tag}.npy"), factual_feat1)
+    np.save(os.path.join(DATA_DIR, f"factual_feat2{tag}.npy"), factual_feat2)
+    np.save(os.path.join(DATA_DIR, f"halluc_feat1{tag}.npy"), halluc_feat1)
+    np.save(os.path.join(DATA_DIR, f"halluc_feat2{tag}.npy"), halluc_feat2)
 
-    print(f"Features saved to {DATA_DIR}/ with tag '_{args.mode}'")
+    print(f"Features saved to {DATA_DIR}/ with tag '{tag}'")
 
 
 if __name__ == "__main__":
