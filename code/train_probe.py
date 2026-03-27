@@ -1,10 +1,10 @@
 """
 Train MLP probe on extracted hidden state features.
 
-Supports natural and adversarial feature files.
+Supports natural, adversarial, and double generation feature files.
 
 Usage:
-    python code/train_probe.py --mode adversarial
+    python code/train_probe.py --mode double --epochs 50
 """
 
 import argparse
@@ -12,7 +12,7 @@ import os
 import numpy as np
 import torch
 import torch.nn as nn
-from sklearn.metrics import accuracy_score, roc_auc_score
+from sklearn.metrics import accuracy_score, classification_report, roc_auc_score
 from sklearn.model_selection import train_test_split
 from torch.utils.data import DataLoader, TensorDataset
 
@@ -21,15 +21,17 @@ MODEL_DIR = "models"
 
 
 class HallucinationProbe(nn.Module):
-    """3-layer MLP probe."""
+    """3-layer MLP probe following MIND's architecture."""
 
     def __init__(self, input_dim):
         super().__init__()
         self.net = nn.Sequential(
             nn.Linear(input_dim, 256),
             nn.ReLU(),
+            nn.Dropout(0.3),
             nn.Linear(256, 64),
             nn.ReLU(),
+            nn.Dropout(0.3),
             nn.Linear(64, 1),
             nn.Sigmoid(),
         )
@@ -38,7 +40,7 @@ class HallucinationProbe(nn.Module):
         return self.net(x).squeeze(-1)
 
 
-def load_features(mode="adversarial"):
+def load_features(mode="double"):
     """Load extracted hidden state features and create labels."""
     print(f"Loading features for mode '{mode}'...")
     factual_feat1 = np.load(os.path.join(DATA_DIR, f"factual_feat1_{mode}.npy"))
@@ -58,8 +60,8 @@ def load_features(mode="adversarial"):
     return X, y
 
 
-def train_and_evaluate(X, y, mode="adversarial", epochs=50, batch_size=32, lr=1e-3):
-    """Train MLP probe and evaluate on a validation split."""
+def train_and_evaluate(X, y, mode="double", epochs=50, batch_size=32, lr=1e-3):
+    """Train probe and evaluate with a train/val split."""
     X_train, X_val, y_train, y_val = train_test_split(
         X, y, test_size=0.2, random_state=42, stratify=y
     )
@@ -77,10 +79,12 @@ def train_and_evaluate(X, y, mode="adversarial", epochs=50, batch_size=32, lr=1e
     criterion = nn.BCELoss()
 
     best_auc = 0.0
+    patience_counter = 0
+    patience = 10
 
     print(f"\nTraining on {device}...")
     print(f"Train: {len(X_train)} | Val: {len(X_val)}")
-    print("-" * 50)
+    print("-" * 60)
 
     for epoch in range(epochs):
         model.train()
@@ -102,15 +106,35 @@ def train_and_evaluate(X, y, mode="adversarial", epochs=50, batch_size=32, lr=1e
 
         if val_auc > best_auc:
             best_auc = val_auc
+            patience_counter = 0
             os.makedirs(MODEL_DIR, exist_ok=True)
             torch.save(model.state_dict(), os.path.join(MODEL_DIR, f"probe_{mode}.pt"))
+        else:
+            patience_counter += 1
 
         if (epoch + 1) % 10 == 0 or epoch == 0:
             avg_loss = train_loss / len(train_loader)
-            print(f"Epoch {epoch+1:3d} | Loss: {avg_loss:.4f} | Val AUC: {val_auc:.4f} | Val Acc: {val_acc:.4f}")
+            print(
+                f"Epoch {epoch+1:3d} | Loss: {avg_loss:.4f} | "
+                f"Val AUC: {val_auc:.4f} | Early Stop: {patience_counter}/{patience}"
+            )
 
-    print("-" * 50)
+        if patience_counter >= patience:
+            print(f"\nEarly stopping triggered at epoch {epoch+1}!")
+            break
+
+    print("-" * 60)
     print(f"Best Val AUC: {best_auc:.4f}")
+
+    # Final classification report
+    model.load_state_dict(torch.load(os.path.join(MODEL_DIR, f"probe_{mode}.pt")))
+    model.eval()
+    with torch.no_grad():
+        val_pred = model(X_val_t.to(device)).cpu().numpy()
+    print("\nClassification Report:")
+    print(classification_report(y_val, (val_pred > 0.5).astype(int),
+                                target_names=["Factual", "Hallucinated"]))
+
     return best_auc
 
 
@@ -118,11 +142,13 @@ def main():
     parser = argparse.ArgumentParser(
         description="Train MLP probe on hidden state features"
     )
-    parser.add_argument("--mode", type=str, default="adversarial",
-                        choices=["natural", "adversarial"])
+    parser.add_argument("--mode", type=str, default="double",
+                        choices=["natural", "adversarial", "double"])
     parser.add_argument("--epochs", type=int, default=50)
     parser.add_argument("--lr", type=float, default=1e-3)
     args = parser.parse_args()
+
+    print(f"{'='*60}\nMode: {args.mode} | Epochs: {args.epochs} | LR: {args.lr}\n{'='*60}\n")
 
     X, y = load_features(mode=args.mode)
     best_auc = train_and_evaluate(X, y, mode=args.mode, epochs=args.epochs, lr=args.lr)

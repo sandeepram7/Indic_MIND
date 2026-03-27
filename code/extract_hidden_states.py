@@ -1,12 +1,10 @@
 """
 Extract hidden states from fact/hallucination pairs.
 
-Supports natural and adversarial generation modes.
-Now averages the last token's hidden state across ALL layers
-instead of using only the final layer (matches MIND methodology).
+Supports natural, adversarial, and double generation modes.
 
 Usage:
-    python code/extract_hidden_states.py --mode adversarial
+    python code/extract_hidden_states.py --mode double
     python code/extract_hidden_states.py --mode adversarial --layer 14
 """
 
@@ -30,37 +28,25 @@ def load_model():
         device_map="auto",
         torch_dtype=torch.bfloat16,
     )
-
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
-
     model.eval()
     return model, tokenizer
 
 
 def extract_features(model, tokenizer, text, layer=None):
-    """Extract MIND-style features from a single text.
-
-    Args:
-        layer: If None, average the last token's hidden state across ALL
-               layers (MIND default). If an integer, use only that layer.
-
-    Returns:
-        feat1: Last token hidden state (averaged across layers, or single layer).
-        feat2: Last layer hidden states averaged across all tokens.
-    """
+    """Extract MIND-style features from a single text."""
     inputs = tokenizer(text, return_tensors="pt", truncation=True, max_length=512)
     inputs = {k: v.to(model.device) for k, v in inputs.items()}
 
     with torch.no_grad():
         outputs = model(**inputs, output_hidden_states=True)
 
-    hidden_states = outputs.hidden_states  # tuple of (num_layers+1) tensors
+    hidden_states = outputs.hidden_states
 
     if layer is not None:
         feat1 = hidden_states[layer][0, -1, :]
     else:
-        # Average last-token state across all 28 layers (MIND approach)
         last_token_per_layer = [hs[0, -1, :] for hs in hidden_states]
         feat1 = torch.stack(last_token_per_layer).mean(dim=0)
 
@@ -74,10 +60,10 @@ def main():
     parser = argparse.ArgumentParser(
         description="Extract hidden states from fact/hallucination pairs"
     )
-    parser.add_argument("--mode", type=str, default="adversarial",
-                        choices=["natural", "adversarial"])
-    parser.add_argument("--layer", type=int, default=None,
-                        help="Extract from single layer (ablation). Default: avg all layers.")
+    parser.add_argument("--mode", type=str, default="double",
+                        choices=["natural", "adversarial", "double",
+                                 "en_natural", "en_adversarial", "en_double"])
+    parser.add_argument("--layer", type=int, default=None)
     args = parser.parse_args()
 
     suffix = f"_layer{args.layer}" if args.layer is not None else ""
@@ -90,6 +76,15 @@ def main():
             pairs.append(json.loads(line))
     print(f"Loaded {len(pairs)} pairs")
 
+    is_double = args.mode in ["double", "en_double"]
+    if is_double:
+        factual_key = "full_llm_truth"
+        halluc_key = "full_llm_lie"
+        print(f"DOUBLE mode: both factual & hallucinated are LLM-generated")
+    else:
+        factual_key = "full_original"
+        halluc_key = "full_llm"
+
     print("Loading model...")
     model, tokenizer = load_model()
 
@@ -98,7 +93,7 @@ def main():
 
     for pair in tqdm(pairs, desc="Extracting hidden states"):
         try:
-            f1, f2 = extract_features(model, tokenizer, pair["full_original"], layer=args.layer)
+            f1, f2 = extract_features(model, tokenizer, pair[factual_key], layer=args.layer)
             factual_feat1.append(f1)
             factual_feat2.append(f2)
         except Exception as e:
@@ -106,7 +101,7 @@ def main():
             continue
 
         try:
-            f1, f2 = extract_features(model, tokenizer, pair["full_llm"], layer=args.layer)
+            f1, f2 = extract_features(model, tokenizer, pair[halluc_key], layer=args.layer)
             halluc_feat1.append(f1)
             halluc_feat2.append(f2)
         except Exception as e:
