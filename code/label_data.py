@@ -5,31 +5,38 @@ Takes the raw output from generate_data.py --mode semantic and assigns
 labels (factual / hallucinated / discarded) based on cosine similarity
 between the LLM completion and the Wikipedia ground truth.
 
-Model used:
-  Hindi:   l3cube-pune/hindi-sentence-similarity-sbert
-
-Thresholds:
-  similarity >= 0.85  →  factual
-  similarity <  0.50  →  hallucinated
-  0.50 <= sim < 0.85  →  discarded (ambiguous)
+Models used:
+  Hindi:   l3cube-pune/hindi-sentence-similarity-sbert  (fine-tuned Hindi STS)
+  English: paraphrase-multilingual-MiniLM-L12-v2        (fast multilingual)
 
 Usage:
+    # Label Hindi semantic data (default):
     python code/label_data.py
+
+    # Label English semantic data:
+    python code/label_data.py --lang en
+
+    # Custom thresholds:
+    python code/label_data.py --high_thresh 0.85 --low_thresh 0.50
+
+    # Just inspect similarity distribution without labeling:
     python code/label_data.py --inspect
 """
 
 import argparse
 import json
 import os
-import random
 import numpy as np
 from sentence_transformers import SentenceTransformer, util
 from tqdm import tqdm
 
 DATA_DIR = "data"
 
-# Hindi sentence similarity model (fine-tuned for STS)
-MODEL_NAME = "l3cube-pune/hindi-sentence-similarity-sbert"
+# Model choices per language
+MODELS = {
+    "hi": "l3cube-pune/hindi-sentence-similarity-sbert",
+    "en": "paraphrase-multilingual-MiniLM-L12-v2",
+}
 
 
 def load_samples(input_file):
@@ -53,6 +60,7 @@ def compute_similarities(model, samples):
     llm_embeddings = model.encode(llm_outputs, show_progress_bar=True,
                                    batch_size=32, convert_to_tensor=True)
 
+    # Pairwise cosine similarity (diagonal of the similarity matrix)
     similarities = []
     for i in range(len(samples)):
         sim = util.cos_sim(gt_embeddings[i], llm_embeddings[i]).item()
@@ -64,29 +72,50 @@ def compute_similarities(model, samples):
 def inspect_distribution(similarities):
     """Print similarity distribution stats for threshold tuning."""
     print(f"\n{'='*60}")
-    print(f"Similarity Distribution")
+    print(f"Similarity Distribution Analysis")
     print(f"{'='*60}")
     print(f"  Count:  {len(similarities)}")
     print(f"  Mean:   {similarities.mean():.4f}")
     print(f"  Std:    {similarities.std():.4f}")
     print(f"  Min:    {similarities.min():.4f}")
     print(f"  Max:    {similarities.max():.4f}")
+    print(f"  Median: {np.median(similarities):.4f}")
 
-    buckets = [(0.0, 0.3), (0.3, 0.5), (0.5, 0.7), (0.7, 0.85), (0.85, 1.01)]
+    # Percentiles
+    for p in [10, 25, 50, 75, 90]:
+        print(f"  P{p:2d}:    {np.percentile(similarities, p):.4f}")
+
+    # Bucket distribution
     print(f"\nBucket Distribution:")
+    buckets = [(0.0, 0.3), (0.3, 0.5), (0.5, 0.7), (0.7, 0.85), (0.85, 1.01)]
     for lo, hi in buckets:
         count = ((similarities >= lo) & (similarities < hi)).sum()
         pct = count / len(similarities) * 100
-        label = " ← hallucinated" if hi <= 0.5 else (" ← factual" if lo >= 0.85 else " ← discard")
+        label = ""
+        if hi <= 0.5:
+            label = " ← hallucinated"
+        elif lo >= 0.85:
+            label = " ← factual"
+        else:
+            label = " ← discard zone"
         print(f"  [{lo:.2f}, {hi:.2f}): {count:4d} ({pct:5.1f}%){label}")
 
 
-def label_samples(samples, similarities, high_thresh=0.85, low_thresh=0.50):
-    """Assign labels based on cosine similarity thresholds."""
-    factual, hallucinated, discarded = [], [], []
+def label_samples(samples, similarities, high_thresh, low_thresh):
+    """Assign labels based on similarity thresholds.
+
+    Rules:
+      similarity >= high_thresh  →  factual   (semantically equivalent)
+      similarity <  low_thresh   →  hallucinated (semantically divergent)
+      otherwise                  →  discarded (ambiguous, skip)
+    """
+    factual = []
+    hallucinated = []
+    discarded = []
 
     for sample, sim in zip(samples, similarities):
         sample["similarity"] = float(sim)
+
         if sim >= high_thresh:
             sample["label"] = "factual"
             factual.append(sample)
@@ -101,9 +130,22 @@ def label_samples(samples, similarities, high_thresh=0.85, low_thresh=0.50):
 
 
 def save_labeled_data(factual, hallucinated, output_file):
-    """Save balanced paired data for extract_hidden_states.py."""
+    """Save labeled samples in the format expected by extract_hidden_states.py.
+
+    Output format per line:
+      {
+        "full_factual": <full text of factual sample>,
+        "full_hallucinated": <full text of hallucinated sample>,
+        ...
+      }
+
+    Since we have unequal counts, we pair them by index (truncating
+    to the smaller class for balance).
+    """
     n = min(len(factual), len(hallucinated))
 
+    # Shuffle both to avoid ordering bias
+    import random
     random.seed(42)
     random.shuffle(factual)
     random.shuffle(hallucinated)
@@ -115,6 +157,8 @@ def save_labeled_data(factual, hallucinated, output_file):
             "full_hallucinated": hallucinated[i]["full_llm"],
             "factual_similarity": factual[i]["similarity"],
             "hallucinated_similarity": hallucinated[i]["similarity"],
+            "factual_ground_truth": factual[i]["full_ground_truth"],
+            "hallucinated_ground_truth": hallucinated[i]["full_ground_truth"],
             "mode": "semantic",
         }
         pairs.append(pair)
@@ -130,43 +174,81 @@ def main():
     parser = argparse.ArgumentParser(
         description="Label semantic-mode data using sentence similarity"
     )
-    parser.add_argument("--high_thresh", type=float, default=0.85)
-    parser.add_argument("--low_thresh", type=float, default=0.50)
+    parser.add_argument("--lang", type=str, default="hi",
+                        choices=["hi", "en"],
+                        help="Language: 'hi' for Hindi, 'en' for English")
+    parser.add_argument("--high_thresh", type=float, default=0.85,
+                        help="Similarity >= this → factual (default: 0.85)")
+    parser.add_argument("--low_thresh", type=float, default=0.50,
+                        help="Similarity < this → hallucinated (default: 0.50)")
     parser.add_argument("--inspect", action="store_true",
                         help="Only print similarity distribution, don't label")
+    parser.add_argument("--input_file", type=str, default=None,
+                        help="Override input file path")
     args = parser.parse_args()
 
-    input_file = os.path.join(DATA_DIR, "train_pairs_semantic.jsonl")
+    # Determine input file
+    if args.input_file:
+        input_file = args.input_file
+    elif args.lang == "en":
+        input_file = os.path.join(DATA_DIR, "train_pairs_en_semantic.jsonl")
+    else:
+        input_file = os.path.join(DATA_DIR, "train_pairs_semantic.jsonl")
+
     print(f"Loading samples from {input_file}...")
     samples = load_samples(input_file)
     print(f"Loaded {len(samples)} samples")
 
-    print(f"\nLoading similarity model: {MODEL_NAME}")
-    model = SentenceTransformer(MODEL_NAME)
+    # Load similarity model
+    model_name = MODELS[args.lang]
+    print(f"\nLoading similarity model: {model_name}")
+    model = SentenceTransformer(model_name)
 
+    # Compute similarities
     print("\nComputing similarities...")
     similarities = compute_similarities(model, samples)
+
+    # Always show distribution
     inspect_distribution(similarities)
 
     if args.inspect:
         print("\n[--inspect mode] Exiting without labeling.")
         return
 
-    print(f"\nLabeling: factual >= {args.high_thresh}, hallucinated < {args.low_thresh}")
+    # Label
+    print(f"\nLabeling with thresholds: factual >= {args.high_thresh}, "
+          f"hallucinated < {args.low_thresh}")
     factual, hallucinated, discarded = label_samples(
         samples, similarities, args.high_thresh, args.low_thresh
     )
 
     print(f"\n{'='*60}")
-    print(f"  Factual:      {len(factual)}")
-    print(f"  Hallucinated: {len(hallucinated)}")
-    print(f"  Discarded:    {len(discarded)}")
+    print(f"Results:")
+    print(f"  Factual:      {len(factual):4d}")
+    print(f"  Hallucinated: {len(hallucinated):4d}")
+    print(f"  Discarded:    {len(discarded):4d}")
     print(f"{'='*60}")
 
-    output_file = os.path.join(DATA_DIR, "train_pairs_semantic_labeled.jsonl")
+    n_pairs = min(len(factual), len(hallucinated))
+    if n_pairs == 0:
+        print("\nERROR: No balanced pairs possible! Adjust thresholds.")
+        print("  Try: --inspect to see the distribution first")
+        return
+
+    # Save paired data
+    lang_prefix = "en_" if args.lang == "en" else ""
+    output_file = os.path.join(DATA_DIR, f"train_pairs_{lang_prefix}semantic_labeled.jsonl")
     pairs = save_labeled_data(factual, hallucinated, output_file)
 
     print(f"\nSaved {len(pairs)} balanced pairs to {output_file}")
+    print(f"  (Truncated to min({len(factual)}, {len(hallucinated)}) = {n_pairs})")
+
+    if pairs:
+        print(f"\nSample pair:")
+        print(f"  Factual (sim={pairs[0]['factual_similarity']:.3f}):")
+        print(f"    {pairs[0]['full_factual'][:100]}...")
+        print(f"  Hallucinated (sim={pairs[0]['hallucinated_similarity']:.3f}):")
+        print(f"    {pairs[0]['full_hallucinated'][:100]}...")
 
 
 if __name__ == "__main__":
