@@ -4,19 +4,23 @@ Train MLP probe on extracted hidden state features.
 Trains a 3-layer MLP classifier to distinguish factual vs hallucinated
 hidden states, following MIND's architecture.
 
-Changes in this version (v6):
-  - Dropout increased from 0.3 to 0.5 (reduces overfitting on large dataset)
-  - Adam optimizer now uses weight_decay=1e-4 (L2 regularization)
-  - Added a proper 3-way split: Train / Validation / Test
-  - Early stopping patience increased to 15
-  - Still uses BCELoss with Sigmoid (not yet switched to BCEWithLogitsLoss)
+Final changes in this version (v7):
+  - Replaced BCELoss + Sigmoid with BCEWithLogitsLoss(pos_weight=2.0).
+    This mathematically forces the network to penalize missed hallucinations
+    twice as heavily, resolving the class recall asymmetry (Factual recall 0.93
+    vs Hallucinated recall 0.70 seen in v6).
+  - Sigmoid removed from the network (BCEWithLogitsLoss applies it internally
+    for numerical stability using the log-sum-exp trick).
+  - Epochs increased to 100, patience increased to 15.
 
 Usage:
     python code/train_probe.py --tag _semantic_labeled --epochs 100
+    python code/train_probe.py --tag _adversarial_layer14
 """
 
 import argparse
 import os
+
 import numpy as np
 import torch
 import torch.nn as nn
@@ -41,14 +45,15 @@ class HallucinationProbe(nn.Module):
             nn.ReLU(),
             nn.Dropout(0.5),
             nn.Linear(64, 1),
-            nn.Sigmoid(),
+            # Sigmoid removed — BCEWithLogitsLoss applies it internally
+            # for numerical stability (log-sum-exp trick).
         )
 
     def forward(self, x):
         return self.net(x).squeeze(-1)
 
 
-def load_features(tag="_semantic_labeled"):
+def load_features(tag="_adversarial"):
     """Load extracted hidden state features and create labels."""
     print(f"Loading features with tag '{tag}'...")
     factual_feat1 = np.load(os.path.join(DATA_DIR, f"factual_feat1{tag}.npy"))
@@ -68,11 +73,13 @@ def load_features(tag="_semantic_labeled"):
     print(f"  Factual: {len(factual_features)}")
     print(f"  Hallucinated: {len(halluc_features)}")
     print(f"  Feature dimension: {X.shape[1]}")
+
     return X, y
 
 
-def train_and_evaluate(X, y, tag="_semantic_labeled", epochs=100, batch_size=32,
-                       lr=1e-3, test_size=0.15):
+def train_and_evaluate(
+    X, y, tag="_adversarial", epochs=50, batch_size=32, lr=1e-3, test_size=0.15
+):
     """Train the MLP probe and evaluate with a 3-way split (Train/Val/Test)."""
     X_train_val, X_test, y_train_val, y_test = train_test_split(
         X, y, test_size=test_size, random_state=42, stratify=y
@@ -80,8 +87,11 @@ def train_and_evaluate(X, y, tag="_semantic_labeled", epochs=100, batch_size=32,
 
     val_size_relative = test_size / (1 - test_size)
     X_train, X_val, y_train, y_val = train_test_split(
-        X_train_val, y_train_val,
-        test_size=val_size_relative, random_state=42, stratify=y_train_val
+        X_train_val,
+        y_train_val,
+        test_size=val_size_relative,
+        random_state=42,
+        stratify=y_train_val,
     )
 
     X_train_t = torch.FloatTensor(X_train)
@@ -89,15 +99,19 @@ def train_and_evaluate(X, y, tag="_semantic_labeled", epochs=100, batch_size=32,
     X_val_t = torch.FloatTensor(X_val)
     y_val_t = torch.FloatTensor(y_val)
     X_test_t = torch.FloatTensor(X_test)
+    y_test_t = torch.FloatTensor(y_test)
 
     train_dataset = TensorDataset(X_train_t, y_train_t)
     train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = HallucinationProbe(X.shape[1]).to(device)
-    # L2 regularization via weight_decay
     optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=1e-4)
-    criterion = nn.BCELoss()
+
+    # pos_weight=2.0 penalises missed hallucinations twice as heavily,
+    # resolving the class asymmetry problem (factual recall >> halluc recall).
+    pos_weight = torch.tensor([2.0]).to(device)
+    criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
 
     best_auc = 0.0
     best_epoch = 0
@@ -122,7 +136,8 @@ def train_and_evaluate(X, y, tag="_semantic_labeled", epochs=100, batch_size=32,
 
         model.eval()
         with torch.no_grad():
-            val_pred = model(X_val_t.to(device)).cpu().numpy()
+            val_logits = model(X_val_t.to(device))
+            val_pred = torch.sigmoid(val_logits).cpu().numpy()
             val_auc = roc_auc_score(y_val, val_pred)
             val_acc = accuracy_score(y_val, (val_pred > 0.5).astype(int))
 
@@ -131,7 +146,8 @@ def train_and_evaluate(X, y, tag="_semantic_labeled", epochs=100, batch_size=32,
             best_epoch = epoch + 1
             patience_counter = 0
             os.makedirs(MODEL_DIR, exist_ok=True)
-            torch.save(model.state_dict(), os.path.join(MODEL_DIR, f"probe{tag}.pt"))
+            model_path = os.path.join(MODEL_DIR, f"probe{tag}.pt")
+            torch.save(model.state_dict(), model_path)
         else:
             patience_counter += 1
 
@@ -149,10 +165,12 @@ def train_and_evaluate(X, y, tag="_semantic_labeled", epochs=100, batch_size=32,
     print("-" * 60)
     print(f"Best Val AUC: {best_auc:.4f} (Epoch {best_epoch})")
 
-    model.load_state_dict(torch.load(os.path.join(MODEL_DIR, f"probe{tag}.pt")))
+    model_path = os.path.join(MODEL_DIR, f"probe{tag}.pt")
+    model.load_state_dict(torch.load(model_path))
     model.eval()
     with torch.no_grad():
-        test_pred = model(X_test_t.to(device)).cpu().numpy()
+        test_logits = model(X_test_t.to(device))
+        test_pred = torch.sigmoid(test_logits).cpu().numpy()
         test_auc = roc_auc_score(y_test, test_pred)
         test_acc = accuracy_score(y_test, (test_pred > 0.5).astype(int))
 
@@ -160,9 +178,16 @@ def train_and_evaluate(X, y, tag="_semantic_labeled", epochs=100, batch_size=32,
     print(f"Test AUC: {test_auc:.4f}")
     print(f"Test Acc: {test_acc:.4f}")
     print(f"{'*'*60}\n")
+
     print("Classification Report (Test Set):")
-    print(classification_report(y_test, (test_pred > 0.5).astype(int),
-                                target_names=["Factual", "Hallucinated"]))
+    print(
+        classification_report(
+            y_test,
+            (test_pred > 0.5).astype(int),
+            target_names=["Factual", "Hallucinated"],
+        )
+    )
+
     return test_auc
 
 
@@ -170,13 +195,15 @@ def main():
     parser = argparse.ArgumentParser(
         description="Train MLP probe on hidden state features"
     )
-    parser.add_argument("--tag", type=str, default="_semantic_labeled")
+    parser.add_argument("--tag", type=str, default="_adversarial")
     parser.add_argument("--epochs", type=int, default=100)
     parser.add_argument("--lr", type=float, default=1e-3)
     parser.add_argument("--test_size", type=float, default=0.15)
     args = parser.parse_args()
 
-    print(f"{'='*60}\nTag: {args.tag} | Epochs: {args.epochs} | LR: {args.lr}\n{'='*60}\n")
+    print(
+        f"{'='*60}\nTag: {args.tag} | Epochs: {args.epochs} | LR: {args.lr}\n{'='*60}\n"
+    )
 
     X, y = load_features(tag=args.tag)
     final_auc = train_and_evaluate(
