@@ -6,12 +6,6 @@ This repository contains the implementation of **Indic-MIND**, an adaptation and
 > **Base Model:** `meta-llama/Llama-3.2-3B-Instruct` (bfloat16, no quantization)
 > **Data Source:** Hindi Wikipedia (~160,000 articles) and English Wikipedia (for baseline)
 
-## Why Hindi?
-
-Hindi Wikipedia has ~160,000 articles. English has ~6.8 million. Llama-3's pre-training data contains less than 0.1% Hindi text. This means the model's internal representations for Hindi are significantly sparser and noisier than English, making hallucination detection harder and more interesting as a research problem.
-
-All existing hallucination detection research (MIND, SelfCheckGPT, Semantic Entropy) has been validated exclusively on English. Indic-MIND is the first attempt to bring real-time internal-state probing to an Indic language.
-
 ## Overview
 
 Large Language Models hallucinate - they generate fluent, grammatically correct text that is factually wrong. This is a well-documented problem in English, but almost zero research exists on detecting hallucinations in Indic languages in real-time. Hindi Wikipedia has ~160,000 articles compared to English's ~6.8 million (a 42x gap), and Llama-3's pre-training data uses less than 0.1% Hindi text. This means the model's internal representations for Hindi are significantly sparser and noisier, making hallucination detection both harder and more scientifically interesting.
