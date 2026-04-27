@@ -2,7 +2,7 @@
 Step 1: Load Llama-3.2-3B-Instruct (unquantized bfloat16) and test Hindi generation.
 
 Usage:
-    python code/load_model_4bit.py
+    python code/load_model_bfloat16.py
 
 Requirements:
     - RTX 4070 Ti (12GB VRAM) or better
