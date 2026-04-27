@@ -2,8 +2,8 @@
 
 This repository contains the implementation of **Indic-MIND**, an adaptation and improvement of the [MIND framework](https://github.com/oneal2000/MIND) (Su et al., ACL 2024 Findings) for real-time hallucination detection in Hindi Large Language Models.
 
-> **Paper:** Indic-MIND: Unsupervised Real-Time Hallucination Detection for Hindi via Internal State Probing
-> **Base Model:** `meta-llama/Llama-3.2-3B-Instruct` (bfloat16, no quantization)
+> **Paper:** Indic-MIND: Unsupervised Real-Time Hallucination Detection for Hindi via Internal State Probing 
+> **Base Model:** `meta-llama/Llama-3.2-3B-Instruct` (bfloat16, no quantization) 
 > **Data Source:** Hindi Wikipedia (~160,000 articles) and English Wikipedia (for baseline)
 
 ## Overview
