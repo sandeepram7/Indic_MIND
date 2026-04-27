@@ -8,7 +8,7 @@ This repository contains the implementation of **Indic-MIND**, an adaptation and
 
 ## Overview
 
-Large Language Models hallucinate - they generate fluent, grammatically correct text that is factually wrong. This is a well-documented problem in English, but almost zero research exists on detecting hallucinations in Indic languages in real-time. Hindi Wikipedia has ~160,000 articles compared to English's ~6.8 million (a 42x gap), and Llama-3's pre-training data uses less than 0.1% Hindi text. This means the model's internal representations for Hindi are significantly sparser and noisier, making hallucination detection both harder and more scientifically interesting.
+Large Language Models hallucinate i.e they generate fluent, grammatically correct text that is factually wrong. This is a well-documented problem in English, but almost zero research exists on detecting hallucinations in Indic languages in real-time. Hindi Wikipedia has around ~160,000 articles compared to English's ~6.8 million (a 42x gap), and Llama-3's pre-training data uses less than 0.1% Hindi text. This means the model's internal representations for Hindi are significantly sparser and noisier, making hallucination detection both harder and more scientifically interesting.
 
 MIND (Su et al., 2024) demonstrated that when an LLM generates factually correct text, its internal hidden states (the intermediate vector representations computed at each Transformer layer) are mathematically distinguishable from when it hallucinates. They trained a lightweight MLP classifier on these hidden states to perform real-time hallucination detection with less than 1ms per-token overhead. However, their work was validated exclusively on English data using six different LLMs (LLaMA-2, Falcon, OPT, GPT-J).
 
@@ -25,21 +25,21 @@ MIND generates training data by:
 1. Taking a Wikipedia sentence and identifying a Named Entity using SpaCy NER.
 2. Truncating the sentence at that entity.
 3. Asking the LLM to complete the sentence.
-4. Checking if the LLM outputs the **exact same entity string**. If yes → Factual. If no → Hallucinated.
+4. Checking if the LLM outputs the **exact same entity string**. If yes then it's Factual while if not then it's Hallucinated.
 
-This produces noisy labels. If the LLM correctly paraphrases the fact (e.g., generates "the capital of France" instead of "Paris"), MIND incorrectly flags it as a hallucination. Hindi NER tools are also significantly weaker than English SpaCy, making this approach even more unreliable for our use case.
+This produces noisy labels. If the LLM correctly paraphrases the fact (say, generates "the capital of France" instead of "Paris"), MIND incorrectly flags it as a hallucination. Hindi NER tools are also significantly weaker than English SpaCy, making this approach even more unreliable for our use case.
 
 ### Our Solution: Natural Generation + Semantic Similarity Labeling
 
 We completely replaced MIND's NER-masking with a two-stage pipeline:
 
-**Stage 1 — Natural Generation:** We truncate Hindi Wikipedia sentences at a random midpoint (40-60% of tokens) and prompt Llama-3.2-3B to complete them using a purely neutral prompt. The model is never instructed to hallucinate. This eliminates the "prompt-type confound" — in our earlier iterations, when we used an adversarial prompt forcing the model to lie, the probe learned to detect the model's internal awareness of its adversarial instructions rather than genuine hallucination.
+**Stage 1 - Natural Generation:** We truncate Hindi Wikipedia sentences at a random midpoint (40-60% of tokens) and prompt Llama-3.2-3B to complete them using a purely neutral prompt. The model is never instructed to hallucinate. This eliminates the "prompt-type confound" that happened in our earlier iterations, when we used an adversarial prompt forcing the model to lie, the probe learned to detect the model's internal awareness of its adversarial instructions rather than genuine hallucination.
 
-**Stage 2 — Semantic Similarity Labeling:** We decouple labeling from generation entirely. A dedicated Hindi Sentence Transformer model ([`l3cube-pune/hindi-sentence-similarity-sbert`](https://huggingface.co/l3cube-pune/hindi-sentence-similarity-sbert)) computes the cosine similarity between the LLM's natural completion and the Wikipedia ground truth:
+**Stage 2 - Semantic Similarity Labeling:** We decouple labeling from generation entirely. A dedicated Hindi Sentence Transformer model ([`l3cube-pune/hindi-sentence-similarity-sbert`](https://huggingface.co/l3cube-pune/hindi-sentence-similarity-sbert)) computes the cosine similarity between the LLM's natural completion and the Wikipedia ground truth:
 
-- **Similarity ≥ 0.85** → Factual (the LLM reproduced the correct information)
-- **Similarity < 0.50** → Hallucinated (the LLM deviated significantly from the truth)
-- **0.50 – 0.85** → Discarded (ambiguous, could go either way)
+- **Similarity ≥ 0.85** -> Factual (the LLM reproduced the correct information)
+- **Similarity < 0.50** -> Hallucinated (the LLM deviated significantly from the truth)
+- **0.50 – 0.85** -> Discarded (ambiguous, could go either way)
 
 This gives the MLP probe a mathematically clean, unambiguous training signal with zero label noise from paraphrasing.
 
@@ -64,7 +64,7 @@ This gives the MLP probe a mathematically clean, unambiguous training signal wit
 
 The English baseline was run under identical conditions (same model, same thresholds, same probe architecture) to serve as a scientific control. The ~4.2% AUC gap directly measures the impact of Hindi's sparse pre-training data on the detectability of internal factuality signals. This gap is our core finding: **real-time hallucination detection works for Hindi, but the sparser internal representations make it measurably harder than English.**
 
-### Why Our AUC is Higher than MIND's (0.72–0.80)
+### Why Our AUC is Higher than MIND's (0.72-0.80)
 
 The original MIND paper reports sentence-level AUC of 0.72–0.80 across six LLMs. Our numbers are higher for three verifiable reasons:
 
@@ -97,7 +97,7 @@ Wikipedia Sentences
 ### Requirements
 
 - Python 3.9+
-- CUDA-capable GPU (tested on RTX 4070 Ti, 12GB VRAM — the 3B model in bfloat16 uses ~6GB, leaving room for hidden state extraction)
+- CUDA-capable GPU (tested on RTX 4070 Ti, 12GB VRAM - the 3B model in bfloat16 uses ~6GB, leaving room for hidden state extraction)
 - Hugging Face access to `meta-llama/Llama-3.2-3B-Instruct`
 
 ### Installation
@@ -166,11 +166,11 @@ These are concatenated into a single 6,144-dimensional vector per sample.
 
 ### Probe Architecture
 
-- 3-layer MLP: `Linear(6144, 256) → ReLU → Dropout(0.5) → Linear(256, 64) → ReLU → Dropout(0.5) → Linear(64, 1)`
-- Loss: `BCEWithLogitsLoss(pos_weight=2.0)` — penalizes missed hallucinations 2x more heavily than missed facts. This was critical for resolving a class asymmetry issue where the initial probe achieved 93% factual recall but only 70% hallucination recall.
-- Optimizer: Adam with `lr=1e-3`, `weight_decay=1e-4`
+- 3-layer MLP: `Linear(6144, 256) -> ReLU -> Dropout(0.5) -> Linear(256, 64) -> ReLU -> Dropout(0.5) -> Linear(64, 1)`
+- Loss: `BCEWithLogitsLoss(pos_weight=2.0)` - penalizes missed hallucinations 2x more heavily than missed facts. This was critical for resolving a class asymmetry issue where the initial probe achieved 93% factual recall but only 70% hallucination recall.
+- Optimizer: Adam optimizer with `lr=1e-3`, `weight_decay=1e-4`
 - Early stopping: patience=15 epochs monitoring validation AUC
-- Data split: 72% train / 13% validation / 15% test (stratified)
+- Data split: 70% train / 15% validation / 15% test (stratified)
 
 ### Crash Resilience
 
